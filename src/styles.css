@@ -521,6 +521,34 @@ button:hover {
   gap: 7px;
 }
 
+.text-quality {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #dce6ee;
+  background: white;
+}
+
+.text-quality span {
+  font-weight: 800;
+}
+
+.text-quality-strong span,
+.text-quality-usable span {
+  color: #17613d;
+}
+
+.text-quality-needs-review span {
+  color: #8a5a00;
+}
+
+.text-quality-unreadable span {
+  color: #8f1d1d;
+}
+
 .correction-list {
   display: grid;
   gap: 8px;

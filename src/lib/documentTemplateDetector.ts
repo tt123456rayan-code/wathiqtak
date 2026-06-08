@@ -1,4 +1,5 @@
 import { documentTemplates, getDocumentTemplate, type DocumentTemplateId } from "./documentTemplateRegistry";
+import { processGovernmentDocumentText } from "./textProcessingPipeline";
 
 export interface DocumentTemplateDetection {
   templateId: DocumentTemplateId;
@@ -24,7 +25,19 @@ function hasPatternBoost(text: string, templateId: DocumentTemplateId) {
 }
 
 export function detectDocumentTemplate(text: string): DocumentTemplateDetection {
-  const normalized = text.replace(/\s+/g, " ").trim();
+  const processed = processGovernmentDocumentText(text);
+  const normalized = processed.processedText.replace(/\s+/g, " ").trim();
+  if (processed.qualityLevel === "unreadable") {
+    const unknown = getDocumentTemplate("unknown");
+    return {
+      templateId: "unknown",
+      templateName: unknown.arabicName,
+      category: unknown.category,
+      confidence: 0,
+      matchedKeywords: [],
+      alternatives: [],
+    };
+  }
   const scored = documentTemplates
     .filter((template) => template.id !== "unknown")
     .map((template) => {
@@ -38,7 +51,8 @@ export function detectDocumentTemplate(text: string): DocumentTemplateDetection 
     .sort((a, b) => b.confidence - a.confidence);
 
   const top = scored[0];
-  const selected = top && top.confidence >= 45 && top.matchedKeywords.length >= 2 ? top.template : getDocumentTemplate("unknown");
+  const hasOfficialSignals = processed.recognizedSignals.length >= 2 && /(رقم الكتاب|رقم المعاملة|وزارة|دائرة|إدارة|نموذج|وصل|شهادة|غرامة|مخالفة|استكمال|رفض)/.test(normalized);
+  const selected = top && (top.confidence >= 45 || (hasOfficialSignals && top.confidence >= 34)) && top.matchedKeywords.length >= 2 ? top.template : getDocumentTemplate("unknown");
 
   return {
     templateId: selected.id,

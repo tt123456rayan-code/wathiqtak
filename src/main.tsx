@@ -170,6 +170,13 @@ function App() {
       setShowMultiPassRaw(false);
     }
     setText(formReadyText);
+    if (normalized.blockingIssues.length) {
+      setDocumentInsight(null);
+      setVehicleForm(null);
+      setAnalysis(null);
+      setOcrError(normalized.blockingIssues[0]);
+      return { ...normalized, normalizedText: formReadyText };
+    }
     detectAndSetDocumentInsight(formReadyText);
     return { ...normalized, normalizedText: formReadyText };
   }
@@ -303,7 +310,7 @@ function App() {
       });
       const normalized = applyOcrNormalization(extracted);
       setNotice("تم استخراج النص وتحسينه محليًا.");
-      if (autoAnalyzeAfterOcr && detectDocumentTemplate(normalized.normalizedText).templateId === "unknown") await analyze(normalized.normalizedText);
+      if (autoAnalyzeAfterOcr && !normalized.blockingIssues.length && detectDocumentTemplate(normalized.normalizedText).templateId === "unknown") await analyze(normalized.normalizedText);
     } catch (error) {
       setOcrError(error instanceof Error ? error.message : "تعذر استخراج النص من الصورة.");
     } finally {
@@ -339,7 +346,7 @@ function App() {
       setOcrStatus("تحسين النص...");
       const normalized = applyOcrNormalization(result.bestText, true);
       setNotice("تمت القراءة متعددة الطبقات وتحسين النص محليًا.");
-      if (autoAnalyzeAfterOcr && detectDocumentTemplate(normalized.normalizedText).templateId === "unknown") await analyze(normalized.normalizedText);
+      if (autoAnalyzeAfterOcr && !normalized.blockingIssues.length && detectDocumentTemplate(normalized.normalizedText).templateId === "unknown") await analyze(normalized.normalizedText);
     } catch (error) {
       const message = error instanceof Error ? error.message : "تعذر تشغيل القراءة متعددة الطبقات.";
       setOcrError(
@@ -762,6 +769,17 @@ function App() {
                   <span>{ocrNormalization.corrections.length} تصحيح</span>
                 </div>
                 <p>هذه الطبقة لا تقرأ الصورة؛ هي تحسن النص الناتج من OCR محليًا قبل التحليل.</p>
+                <div className={`text-quality text-quality-${ocrNormalization.qualityLevel}`}>
+                  <strong>جودة النص: {ocrNormalization.qualityScore}/100</strong>
+                  <span>
+                    {ocrNormalization.qualityLevel === "strong" && "قوي"}
+                    {ocrNormalization.qualityLevel === "usable" && "قابل للتحليل"}
+                    {ocrNormalization.qualityLevel === "needs-review" && "يحتاج مراجعة"}
+                    {ocrNormalization.qualityLevel === "unreadable" && "غير معروف"}
+                  </span>
+                </div>
+                {!!ocrNormalization.blockingIssues.length && <Checklist title="تم منع التحليل التلقائي" items={ocrNormalization.blockingIssues} />}
+                {!!ocrNormalization.removedNoiseLines.length && <p className="quality-warning">تم تجاهل {ocrNormalization.removedNoiseLines.length} سطر غير مفهوم من OCR.</p>}
                 {!!ocrNormalization.detectedGovernmentTerms.length && (
                   <div className="term-list">
                     {ocrNormalization.detectedGovernmentTerms.map((term) => <span key={term}>{term}</span>)}

@@ -1,3 +1,5 @@
+import { processGovernmentDocumentText, type TextQualityLevel } from "./textProcessingPipeline";
+
 export interface OcrNormalizationResult {
   originalText: string;
   normalizedText: string;
@@ -8,6 +10,10 @@ export interface OcrNormalizationResult {
   }>;
   confidenceHints: string[];
   detectedGovernmentTerms: string[];
+  qualityScore: number;
+  qualityLevel: TextQualityLevel;
+  blockingIssues: string[];
+  removedNoiseLines: string[];
 }
 
 interface CorrectionRule {
@@ -87,9 +93,10 @@ function normalizeWhitespace(text: string) {
 }
 
 export function normalizeGovernmentOcrText(text: string): OcrNormalizationResult {
-  const corrections: OcrNormalizationResult["corrections"] = [];
+  const textProcessing = processGovernmentDocumentText(text);
+  const corrections: OcrNormalizationResult["corrections"] = [...textProcessing.corrections];
   const originalText = text;
-  let normalizedText = normalizeWhitespace(text);
+  let normalizedText = normalizeWhitespace(textProcessing.processedText);
 
   const whitespaceNormalized = normalizedText;
   normalizedText = normalizedText.replace(/ـ/g, "");
@@ -115,8 +122,8 @@ export function normalizeGovernmentOcrText(text: string): OcrNormalizationResult
 
   normalizedText = normalizeWhitespace(normalizedText);
 
-  const detectedGovernmentTerms = governmentTerms.filter((term) => normalizedText.includes(term));
-  const confidenceHints: string[] = [];
+  const detectedGovernmentTerms = [...new Set([...governmentTerms.filter((term) => normalizedText.includes(term)), ...textProcessing.recognizedSignals])];
+  const confidenceHints: string[] = [...textProcessing.warnings];
   if (corrections.length > 0) confidenceHints.push("تم تطبيق تصحيحات OCR شائعة؛ راجع النص قبل التحليل.");
   if (detectedGovernmentTerms.length > 0) confidenceHints.push("تم رصد مصطلحات حكومية تساعد التحليل المحلي.");
   if (normalizedText.length < 80) confidenceHints.push("النص قصير؛ قد تكون دقة التحليل أقل إذا كانت الصورة ناقصة.");
@@ -128,5 +135,9 @@ export function normalizeGovernmentOcrText(text: string): OcrNormalizationResult
     corrections,
     confidenceHints,
     detectedGovernmentTerms,
+    qualityScore: textProcessing.qualityScore,
+    qualityLevel: textProcessing.qualityLevel,
+    blockingIssues: textProcessing.blockers,
+    removedNoiseLines: textProcessing.removedNoiseLines,
   };
 }
