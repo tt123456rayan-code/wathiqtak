@@ -2,11 +2,12 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AlertTriangle, CalendarClock, CheckCircle2, Clipboard, Download, FileText, LockKeyhole, MessageSquareText, Printer, Trash2, Upload } from "lucide-react";
 import { localRulesProvider } from "./lib/aiProvider";
-import { extractTextFromImage } from "./lib/ocrEngine";
+import { extractTextFromImage, extractTextMultiPass, type MultiPassOcrResult } from "./lib/ocrEngine";
 import { analyzeDocumentImageQuality, prepareImageForWeakDevice, type ImageQualityReport } from "./lib/imageQuality";
 import { buildImageProcessingPlan, detectDeviceTier, selectMobileOcrMode, type MobileOcrMode } from "./lib/mobileOcrStrategy";
 import type { LetterAnalysis, RiskLevel } from "./lib/analysisEngine";
 import { composeOfficialReply, type ComposedOfficialReply, type ReplyTone } from "./lib/replyComposer";
+import { normalizeGovernmentOcrText, type OcrNormalizationResult } from "./lib/ocrTextNormalizer";
 import "./styles.css";
 
 type CaseStatus = "جديد" | "قيد المتابعة" | "تم الإجراء";
@@ -35,7 +36,8 @@ const demoScenarios = [
   },
   {
     label: "كتاب وزارة الصحة - طلب كشوفات عاجل",
-    text: "وزارة الصحة، هام وعاجل، أرجو تزويدي بقوائم أسماء الموظفين على رأس عملهم والموظفين ممن لم يكونوا على رأس عملهم، على أن تكون الكشوفات Excel Sheet ونسخة ورقية وإلكترونية مع تصديق الكشوفات من المسؤول، وذلك بالسرعة الممكنة.",
+    text: "وزارة الصحه، هام و عاجل، ارجو تزو يدي بقوائم أسماء الموظفين على راس عملهم والموظفين ممن لم يكونو على راس عملهم، على أن تكون الكشوفات اكسل شيت ونسخه ورقيه والكترونيه مع تصديق الكشوفات من المسؤول، وذلك بالسرعه الممكنه.",
+    normalize: true,
   },
 ];
 
@@ -68,6 +70,12 @@ function App() {
   const [ocrProgress, setOcrProgress] = useState(0);
   const [ocrStatus, setOcrStatus] = useState("");
   const [ocrError, setOcrError] = useState("");
+  const [ocrRawText, setOcrRawText] = useState("");
+  const [ocrNormalization, setOcrNormalization] = useState<OcrNormalizationResult | null>(null);
+  const [reviewedNormalizedText, setReviewedNormalizedText] = useState("");
+  const [showOcrCorrections, setShowOcrCorrections] = useState(false);
+  const [multiPassResult, setMultiPassResult] = useState<MultiPassOcrResult | null>(null);
+  const [showMultiPassRaw, setShowMultiPassRaw] = useState(false);
   const [qualityReport, setQualityReport] = useState<ImageQualityReport | null>(null);
   const [isQualityChecking, setIsQualityChecking] = useState(false);
   const [allowPoorImageOcr, setAllowPoorImageOcr] = useState(false);
@@ -119,8 +127,39 @@ function App() {
     setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
 
-  async function runDemo(sample: string) {
-    setInputMode("text");
+  function applyOcrNormalization(rawText: string, keepMultiPassResult = false) {
+    const normalized = normalizeGovernmentOcrText(rawText);
+    setOcrRawText(rawText);
+    setOcrNormalization(normalized);
+    setReviewedNormalizedText(normalized.normalizedText);
+    setShowOcrCorrections(false);
+    if (!keepMultiPassResult) {
+      setMultiPassResult(null);
+      setShowMultiPassRaw(false);
+    }
+    setText(normalized.normalizedText);
+    return normalized;
+  }
+
+  async function analyzeReviewedOcrText() {
+    const reviewed = reviewedNormalizedText.trim() ? reviewedNormalizedText : text;
+    setText(reviewed);
+    await analyze(reviewed);
+  }
+
+  async function runDemo(sample: string, normalizeSample = false) {
+    setInputMode(normalizeSample ? "image" : "text");
+    if (normalizeSample) {
+      const normalized = applyOcrNormalization(sample);
+      await analyze(normalized.normalizedText);
+      return;
+    }
+    setOcrRawText("");
+    setOcrNormalization(null);
+    setReviewedNormalizedText("");
+    setShowOcrCorrections(false);
+    setMultiPassResult(null);
+    setShowMultiPassRaw(false);
     setText(sample);
     await analyze(sample);
   }
@@ -149,6 +188,12 @@ function App() {
     setOcrError("");
     setOcrProgress(0);
     setOcrStatus("");
+    setOcrRawText("");
+    setOcrNormalization(null);
+    setReviewedNormalizedText("");
+    setShowOcrCorrections(false);
+    setMultiPassResult(null);
+    setShowMultiPassRaw(false);
     await checkImageQuality(file);
   }
 
@@ -173,11 +218,43 @@ function App() {
         setOcrProgress(progress);
         setOcrStatus(status || "جاري قراءة الصورة...");
       });
-      setText(extracted);
-      setNotice("تم استخراج النص من الصورة.");
-      if (autoAnalyzeAfterOcr) await analyze(extracted);
+      const normalized = applyOcrNormalization(extracted);
+      setNotice("تم استخراج النص وتحسينه محليًا.");
+      if (autoAnalyzeAfterOcr) await analyze(normalized.normalizedText);
     } catch (error) {
       setOcrError(error instanceof Error ? error.message : "تعذر استخراج النص من الصورة.");
+    } finally {
+      setIsOcrRunning(false);
+    }
+  }
+
+  async function runMultiPassOcr() {
+    if (!selectedImage || isOcrRunning) return;
+    if (qualityReport?.level === "poor" && !allowPoorImageOcr) {
+      setOcrError("قد تكون نتيجة القراءة غير دقيقة. صوّر الورقة بإضاءة أفضل أو من مسافة أقرب، أو اضغط تابع رغم ضعف الصورة.");
+      return;
+    }
+    setIsOcrRunning(true);
+    setOcrError("");
+    setOcrProgress(0);
+    setOcrStatus("تجهيز الصورة...");
+    setMultiPassResult(null);
+    setShowMultiPassRaw(false);
+    try {
+      const result = await extractTextMultiPass(selectedImage, {
+        deviceTier,
+        onProgress: (progress, status) => {
+          setOcrProgress(progress);
+          setOcrStatus(status);
+        },
+      });
+      setMultiPassResult(result);
+      setOcrStatus("تحسين النص...");
+      const normalized = applyOcrNormalization(result.bestText, true);
+      setNotice("تمت القراءة متعددة الطبقات وتحسين النص محليًا.");
+      if (autoAnalyzeAfterOcr) await analyze(normalized.normalizedText);
+    } catch (error) {
+      setOcrError(error instanceof Error ? error.message : "تعذر تشغيل القراءة متعددة الطبقات.");
     } finally {
       setIsOcrRunning(false);
     }
@@ -243,6 +320,12 @@ function App() {
     setSelectedImage(null);
     setQualityReport(null);
     setAllowPoorImageOcr(false);
+    setOcrRawText("");
+    setOcrNormalization(null);
+    setReviewedNormalizedText("");
+    setShowOcrCorrections(false);
+    setMultiPassResult(null);
+    setShowMultiPassRaw(false);
     setInputMode("text");
     setAnalysis(null);
     setReply(null);
@@ -306,7 +389,7 @@ function App() {
       <section className="panel demo-panel">
         <div className="section-title"><CheckCircle2 size={22} /><h2>جرّب سيناريو العرض</h2></div>
         <div className="demo-grid">
-          {demoScenarios.map((sample) => <button key={sample.label} className="demo-card" onClick={() => runDemo(sample.text)}>{sample.label}</button>)}
+          {demoScenarios.map((sample) => <button key={sample.label} className="demo-card" onClick={() => runDemo(sample.text, sample.normalize)}>{sample.label}</button>)}
         </div>
       </section>
 
@@ -369,7 +452,7 @@ function App() {
                   <button className="secondary" onClick={() => void checkImageQuality()}>فحص الصورة مرة أخرى</button>
                   {qualityReport?.level === "poor" && <button className="secondary" onClick={() => cameraInputRef.current?.click()}>أعد التصوير</button>}
                   {qualityReport?.level === "poor" && <button className="secondary" onClick={() => { setAllowPoorImageOcr(true); setOcrError(""); }}>تابع رغم ضعف الصورة</button>}
-                  {qualityReport?.level === "poor" && <button className="secondary" onClick={() => runDemo(demoScenarios[3].text)}>جرّب مثال وزارة الصحة</button>}
+                  {qualityReport?.level === "poor" && <button className="secondary" onClick={() => runDemo(demoScenarios[3].text, demoScenarios[3].normalize)}>جرّب مثال وزارة الصحة</button>}
                   {qualityReport && qualityReport.level !== "poor" && <button className="primary" onClick={runOcr}>ابدأ القراءة الآن</button>}
                 </div>
               </div>
@@ -399,7 +482,14 @@ function App() {
               <input type="checkbox" checked={autoAnalyzeAfterOcr} onChange={(event) => setAutoAnalyzeAfterOcr(event.target.checked)} />
               تحليل تلقائي بعد الاستخراج
             </label>
-            <button className="primary" onClick={runOcr} disabled={!selectedImage || isOcrRunning}>{isOcrRunning ? "جاري استخراج النص..." : "استخراج النص من الصورة"}</button>
+            <div className="action-row">
+              <button className="primary" onClick={runMultiPassOcr} disabled={!selectedImage || isOcrRunning}>
+                {isOcrRunning ? "جاري تشغيل القراءة..." : "قراءة محسّنة متعددة الطبقات"}
+              </button>
+              <button className="secondary" onClick={runOcr} disabled={!selectedImage || isOcrRunning}>
+                قراءة تجريبية بسيطة
+              </button>
+            </div>
             <p>قد يحتاج OCR إلى إنترنت أول مرة لتحميل ملفات اللغة، لكن الصورة والنص لا يتم رفعهما لأي خادم.</p>
             {(isOcrRunning || ocrProgress > 0) && (
               <div className="ocr-progress">
@@ -408,12 +498,130 @@ function App() {
               </div>
             )}
             {ocrError && <p className="ocr-error">{ocrError}</p>}
+            {multiPassResult && (
+              <div className="multi-pass-card">
+                <div className="normalizer-head">
+                  <h3>نتيجة القراءة متعددة الطبقات</h3>
+                  <span>{multiPassResult.rawResults.length} طبقات</span>
+                </div>
+                <div className="quality-metrics">
+                  <span>الطبقة المختارة: {multiPassResult.selectedVariant}</span>
+                  <span>درجة القراءة: {multiPassResult.rawResults[0]?.score ?? 0}</span>
+                  <span>النتائج الخام: {multiPassResult.rawResults.length}</span>
+                </div>
+                {!!multiPassResult.warnings.length && <Checklist title="تحذيرات القراءة" items={multiPassResult.warnings} />}
+                <div className="action-row">
+                  <button className="secondary" onClick={() => setShowMultiPassRaw(!showMultiPassRaw)}>
+                    {showMultiPassRaw ? "إخفاء النتائج الخام" : "عرض النتائج الخام لكل طبقة"}
+                  </button>
+                  <button
+                    className="secondary"
+                    onClick={() => {
+                      const normalized = ocrNormalization?.normalizedText ?? reviewedNormalizedText;
+                      setReviewedNormalizedText(normalized);
+                      setText(normalized);
+                      setNotice("تم استخدام النص المحسن.");
+                    }}
+                  >
+                    استخدم النص المحسن
+                  </button>
+                  <button
+                    className="secondary"
+                    onClick={() => {
+                      setReviewedNormalizedText(multiPassResult.bestText);
+                      setText(multiPassResult.bestText);
+                      setNotice("تم استخدام النص الخام الأفضل.");
+                    }}
+                  >
+                    استخدم النص الخام
+                  </button>
+                </div>
+                {showMultiPassRaw && (
+                  <div className="raw-result-list">
+                    {multiPassResult.rawResults.map((item) => (
+                      <article key={item.variant}>
+                        <strong>{item.variant} · score {item.score}</strong>
+                        {!!item.warnings.length && <small>{item.warnings.join("، ")}</small>}
+                        <pre>{item.text || "لم يتم استخراج نص واضح."}</pre>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {ocrNormalization && (
+              <div className="normalizer-card">
+                <div className="normalizer-head">
+                  <h3>تحسين النص المستخرج</h3>
+                  <span>{ocrNormalization.corrections.length} تصحيح</span>
+                </div>
+                <p>هذه الطبقة لا تقرأ الصورة؛ هي تحسن النص الناتج من OCR محليًا قبل التحليل.</p>
+                {!!ocrNormalization.detectedGovernmentTerms.length && (
+                  <div className="term-list">
+                    {ocrNormalization.detectedGovernmentTerms.map((term) => <span key={term}>{term}</span>)}
+                  </div>
+                )}
+                {!!ocrNormalization.confidenceHints.length && <Checklist title="ملاحظات المراجعة" items={ocrNormalization.confidenceHints} />}
+                {!!ocrNormalization.corrections.length && (
+                  <>
+                    <button className="secondary" onClick={() => setShowOcrCorrections(!showOcrCorrections)}>
+                      {showOcrCorrections ? "إخفاء التصحيحات" : "عرض التصحيحات"}
+                    </button>
+                    {showOcrCorrections && (
+                      <div className="correction-list">
+                        {ocrNormalization.corrections.map((item, index) => (
+                          <div key={`${item.from}-${item.to}-${index}`}>
+                            <strong>{item.from}</strong>
+                            <span>←</span>
+                            <strong>{item.to}</strong>
+                            <small>{item.reason}</small>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+                <label>
+                  النص المنظف القابل للتعديل
+                  <textarea
+                    value={reviewedNormalizedText}
+                    onChange={(event) => {
+                      setReviewedNormalizedText(event.target.value);
+                      setText(event.target.value);
+                    }}
+                  />
+                </label>
+                <div className="action-row">
+                  <button className="primary" onClick={analyzeReviewedOcrText}>حلّل النص بعد المراجعة</button>
+                  {!!ocrRawText && (
+                    <button
+                      className="secondary"
+                      onClick={() => {
+                        setReviewedNormalizedText(ocrRawText);
+                        setText(ocrRawText);
+                        setNotice("تم استخدام النص الأصلي.");
+                      }}
+                    >
+                      استخدم النص الأصلي بدل المنظف
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
             <p>قد تختلف دقة قراءة النص حسب وضوح الصورة. يمكنك تعديل النص المستخرج قبل إنشاء الرد الرسمي.</p>
           </div>
         )}
-        <textarea id="letter-input" value={text} onChange={(event) => setText(event.target.value)} placeholder="ألصق نص الكتاب أو الرسالة الحكومية هنا..." />
+        <textarea
+          id="letter-input"
+          value={text}
+          onChange={(event) => {
+            setText(event.target.value);
+            if (ocrNormalization) setReviewedNormalizedText(event.target.value);
+          }}
+          placeholder="ألصق نص الكتاب أو الرسالة الحكومية هنا..."
+        />
         {inputMode === "image" && text.trim() && <div className="extracted-card">النص المستخرج جاهز للمراجعة والتعديل قبل التحليل.</div>}
-        {inputMode === "image" && text.trim() && !autoAnalyzeAfterOcr && <button className="secondary" onClick={() => analyze()}>حلّل النص المستخرج</button>}
+        {inputMode === "image" && text.trim() && !autoAnalyzeAfterOcr && <button className="secondary" onClick={ocrNormalization ? analyzeReviewedOcrText : () => analyze()}>حلّل النص المستخرج</button>}
         <button className="primary" onClick={() => analyze()}>حلّل الكتاب</button>
       </section>
 

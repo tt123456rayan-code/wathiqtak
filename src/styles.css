@@ -476,6 +476,101 @@ button:hover {
   border-radius: 8px;
 }
 
+.normalizer-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #cfe1ee;
+  border-radius: 8px;
+  background: #f7fbfe;
+}
+
+.multi-pass-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #d8c27d;
+  border-radius: 8px;
+  background: #fffaf0;
+}
+
+.normalizer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.normalizer-head h3 {
+  color: #0c2d4a;
+}
+
+.normalizer-head span,
+.term-list span {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #e9f3ee;
+  color: #17613d;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.term-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.correction-list {
+  display: grid;
+  gap: 8px;
+}
+
+.correction-list div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid #dce6ee;
+  border-radius: 8px;
+  background: white;
+}
+
+.correction-list small {
+  color: #66788a;
+}
+
+.raw-result-list {
+  display: grid;
+  gap: 10px;
+}
+
+.raw-result-list article {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid #dce6ee;
+  border-radius: 8px;
+  background: white;
+}
+
+.raw-result-list small {
+  color: #66788a;
+}
+
+.raw-result-list pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  direction: rtl;
+  color: #142338;
+  font-family: inherit;
+  line-height: 1.7;
+}
+
 .extracted-card {
   margin: 10px 0;
   text-align: start;
