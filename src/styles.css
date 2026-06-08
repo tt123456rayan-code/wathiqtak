@@ -645,6 +645,77 @@ select:focus {
   gap: 10px;
 }
 
+.form-table {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.form-table div {
+  padding: 12px;
+  border: 1px solid #dce6ee;
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.form-table span {
+  display: block;
+  margin-bottom: 6px;
+  color: #607588;
+  font-size: 13px;
+}
+
+.form-table strong {
+  color: #10243a;
+  overflow-wrap: anywhere;
+}
+
+.form-table small {
+  display: block;
+  margin-top: 6px;
+  color: #66788a;
+}
+
+.document-terms {
+  margin-top: 14px;
+}
+
+.template-group + .template-group {
+  margin-top: 18px;
+}
+
+.template-group h3 {
+  margin-bottom: 10px;
+  color: #0c2d4a;
+}
+
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.template-grid article {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid #dce6ee;
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.template-grid p {
+  color: #44596e;
+  line-height: 1.7;
+}
+
+.template-grid span,
+.template-grid small {
+  color: #66788a;
+  font-size: 13px;
+}
+
 .info-box {
   padding: 13px;
   background: #f6f9fb;
@@ -836,6 +907,8 @@ select {
   }
 
   .analysis-grid,
+  .form-table,
+  .template-grid,
   .case-card,
   .reply-form {
     grid-template-columns: 1fr;

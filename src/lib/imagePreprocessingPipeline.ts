@@ -199,7 +199,7 @@ export async function createPreprocessingVariants(
   const bitmap = await createImageBitmap(file);
   const warnings: string[] = [];
   const variantsToRun = targetVariants(deviceTier);
-  if (deviceTier === "weak") warnings.push("الوضع الخفيف يستخدم عدد طبقات أقل لتقليل استهلاك الجهاز.");
+  if (deviceTier === "weak") warnings.push("تم استخدام وضع خفيف مناسب للأجهزة الضعيفة.");
 
   const variants: ProcessedImageVariant[] = [];
   for (const variant of variantsToRun) {

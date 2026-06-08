@@ -8,6 +8,13 @@ import { buildImageProcessingPlan, detectDeviceTier, selectMobileOcrMode, type M
 import type { LetterAnalysis, RiskLevel } from "./lib/analysisEngine";
 import { composeOfficialReply, type ComposedOfficialReply, type ReplyTone } from "./lib/replyComposer";
 import { normalizeGovernmentOcrText, type OcrNormalizationResult } from "./lib/ocrTextNormalizer";
+import { detectGovernmentFormType } from "./lib/formDocumentDetector";
+import { maskSensitiveValue } from "./lib/formFieldValidators";
+import { parseVehicleTransferFormText, type VehicleTransferFormResult } from "./lib/vehicleTransferFormParser";
+import { normalizeVehicleTransferText } from "./lib/vehicleTransferNormalizer";
+import { detectDocumentTemplate, type DocumentTemplateDetection } from "./lib/documentTemplateDetector";
+import { extractFieldsByTemplate, type ExtractedDocumentField } from "./lib/documentFieldExtractor";
+import { documentTemplates, getDocumentTemplate } from "./lib/documentTemplateRegistry";
 import "./styles.css";
 
 type CaseStatus = "جديد" | "قيد المتابعة" | "تم الإجراء";
@@ -19,6 +26,12 @@ interface CaseFile {
   status: CaseStatus;
   createdAt: string;
   officialReply?: ComposedOfficialReply;
+}
+
+interface DocumentInsight {
+  detection: DocumentTemplateDetection;
+  fields: ExtractedDocumentField[];
+  recommendedAction: string;
 }
 
 const demoScenarios = [
@@ -39,6 +52,18 @@ const demoScenarios = [
     text: "وزارة الصحه، هام و عاجل، ارجو تزو يدي بقوائم أسماء الموظفين على راس عملهم والموظفين ممن لم يكونو على راس عملهم، على أن تكون الكشوفات اكسل شيت ونسخه ورقيه والكترونيه مع تصديق الكشوفات من المسؤول، وذلك بالسرعه الممكنه.",
     normalize: true,
   },
+  {
+    label: "نموذج نقل مركبة - الترخيص",
+    text: "المملكة الأردنية الهاشمية إدارة ترخيص السواقين والمركبات نموذج نقل مركبة صفة التسجيل خصوصي الرقم الوطني 1234567890 اسم المشترى أحمد محمد سالم تاريخ الولادة 12/05/1990 اسم الأم ليلى الجنسية الأردنية المحافظة العاصمه رقم الباتف 0791234567 نوع الوثيقة هوية احوال رقم الوثيقة 7654321 اسم البائع خالد محمود علي نوع الوثيقة هوية. Wal رقم الوثيقة 2345678 رقم سند 998877",
+    normalize: true,
+  },
+  { label: "هوية شخصية وهمية", text: "بطاقة الأحوال المدنية هوية أحوال الاسم سارة أحمد محمود الرقم الوطني 9872034493 تاريخ الميلاد 02/03/1996 الجنسية الأردنية رقم الوثيقة 13235729", normalize: true },
+  { label: "شهادة جامعية وهمية", text: "جامعة اليرموك مصدقة تخرج الاسم ليث محمد علي كلية تقنية المعلومات تخصص نظم معلومات التاريخ 15/07/2025 الرقم المرجعي UNI-44521", normalize: true },
+  { label: "كتاب رسمي وهمي", text: "وزارة العمل رقم الكتاب ML-2026-441 التاريخ 04/06/2026 الموضوع تزويد وثائق يرجى مراجعة الدائرة خلال 7 أيام وإحضار المرفقات المطلوبة", normalize: true },
+  { label: "وصل دفع وهمي", text: "إيصال مالي رقم الوصل REC-88421 أمانة عمان الكبرى اسم الدافع مريم خالد المبلغ 25 دينار تاريخ الدفع 01/06/2026 نوع الرسوم رسوم خدمة", normalize: true },
+  { label: "طلب حكومي وهمي", text: "نموذج طلب خدمة دائرة الأحوال المدنية مقدم الطلب عمر محمود رقم المعاملة APP-55210 النواقص المطلوبة صورة الهوية وإثبات سكن الخطوة التالية استكمال النواقص", normalize: true },
+  { label: "إشعار نواقص وهمي", text: "إشعار استكمال نواقص رقم المعاملة 2026/778 دائرة حكومية يرجى استكمال النواقص المطلوبة مرفق إثبات السكن وصورة الهوية خلال 10 أيام", normalize: true },
+  { label: "مخالفة أو غرامة وهمية", text: "إشعار مخالفة بلدية رقم المخالفة V-10028 المبلغ 35 دينار آخر موعد 20/06/2026 سبب المخالفة عدم تجديد رخصة مهن", normalize: true },
 ];
 
 const brandIconUrl = `${import.meta.env.BASE_URL}brand/wathiqtak-icon.svg`;
@@ -70,6 +95,7 @@ function App() {
   const [ocrProgress, setOcrProgress] = useState(0);
   const [ocrStatus, setOcrStatus] = useState("");
   const [ocrError, setOcrError] = useState("");
+  const [canStopOcr, setCanStopOcr] = useState(false);
   const [ocrRawText, setOcrRawText] = useState("");
   const [ocrNormalization, setOcrNormalization] = useState<OcrNormalizationResult | null>(null);
   const [reviewedNormalizedText, setReviewedNormalizedText] = useState("");
@@ -81,6 +107,8 @@ function App() {
   const [allowPoorImageOcr, setAllowPoorImageOcr] = useState(false);
   const [selectedMobileOcrMode, setSelectedMobileOcrMode] = useState<MobileOcrMode>(() => selectMobileOcrMode());
   const [analysis, setAnalysis] = useState<LetterAnalysis | null>(null);
+  const [documentInsight, setDocumentInsight] = useState<DocumentInsight | null>(null);
+  const [vehicleForm, setVehicleForm] = useState<VehicleTransferFormResult | null>(null);
   const [reply, setReply] = useState<ComposedOfficialReply | null>(null);
   const [replyTone, setReplyTone] = useState<ReplyTone>("رسمي");
   const [replyApplicantName, setReplyApplicantName] = useState("");
@@ -96,6 +124,7 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const resultRef = useRef<HTMLElement>(null);
+  const ocrAbortRef = useRef<AbortController | null>(null);
 
   const reminders = useMemo(() => cases.filter((item) => item.analysis.deadlineType !== "لا يوجد" && item.status !== "تم الإجراء"), [cases]);
   const deviceTier = useMemo(() => detectDeviceTier(), []);
@@ -117,6 +146,8 @@ function App() {
       setNotice("أدخل نص الكتاب أولًا أو جرّب أحد سيناريوهات العرض.");
       return;
     }
+    setVehicleForm(null);
+    setDocumentInsight(null);
     const result = await localRulesProvider.analyzeGovernmentLetter(customText);
     setAnalysis(result);
     setReply(null);
@@ -129,28 +160,75 @@ function App() {
 
   function applyOcrNormalization(rawText: string, keepMultiPassResult = false) {
     const normalized = normalizeGovernmentOcrText(rawText);
+    const formReadyText = normalizeVehicleTransferText(normalized.normalizedText);
     setOcrRawText(rawText);
     setOcrNormalization(normalized);
-    setReviewedNormalizedText(normalized.normalizedText);
+    setReviewedNormalizedText(formReadyText);
     setShowOcrCorrections(false);
     if (!keepMultiPassResult) {
       setMultiPassResult(null);
       setShowMultiPassRaw(false);
     }
-    setText(normalized.normalizedText);
-    return normalized;
+    setText(formReadyText);
+    detectAndSetDocumentInsight(formReadyText);
+    return { ...normalized, normalizedText: formReadyText };
+  }
+
+  function detectAndSetDocumentInsight(candidateText: string) {
+    const detection = detectDocumentTemplate(candidateText);
+    if (detection.templateId !== "unknown") {
+      const template = getDocumentTemplate(detection.templateId);
+      let fields = extractFieldsByTemplate(candidateText, detection.templateId);
+      if (detection.templateId === "vehicle-transfer") {
+        const parsed = parseVehicleTransferFormText(candidateText);
+        setVehicleForm(parsed);
+        fields = vehicleFormToDocumentFields(parsed);
+      } else {
+        setVehicleForm(null);
+      }
+      setDocumentInsight({ detection, fields, recommendedAction: template.recommendedAction });
+      setAnalysis(null);
+      setReply(null);
+      setIsReplyComposerOpen(false);
+      setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+      return true;
+    }
+    setDocumentInsight(null);
+    setVehicleForm(null);
+    return false;
+  }
+
+  function detectAndSetVehicleForm(candidateText: string) {
+    const detection = detectGovernmentFormType(candidateText);
+    if (detection.formType === "vehicle-transfer") {
+      setVehicleForm(parseVehicleTransferFormText(candidateText));
+      setAnalysis(null);
+      setReply(null);
+      setIsReplyComposerOpen(false);
+      setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+      return true;
+    }
+    setVehicleForm(null);
+    return false;
   }
 
   async function analyzeReviewedOcrText() {
     const reviewed = reviewedNormalizedText.trim() ? reviewedNormalizedText : text;
     setText(reviewed);
+    if (detectAndSetDocumentInsight(reviewed)) return;
     await analyze(reviewed);
   }
 
+  async function analyzeEntryText() {
+    if (detectAndSetDocumentInsight(text)) return;
+    await analyze();
+  }
+
   async function runDemo(sample: string, normalizeSample = false) {
-    setInputMode(normalizeSample ? "image" : "text");
+    setInputMode("text");
     if (normalizeSample) {
       const normalized = applyOcrNormalization(sample);
+      if (detectDocumentTemplate(normalized.normalizedText).templateId !== "unknown") return;
       await analyze(normalized.normalizedText);
       return;
     }
@@ -160,6 +238,8 @@ function App() {
     setShowOcrCorrections(false);
     setMultiPassResult(null);
     setShowMultiPassRaw(false);
+    setVehicleForm(null);
+    setDocumentInsight(null);
     setText(sample);
     await analyze(sample);
   }
@@ -188,12 +268,15 @@ function App() {
     setOcrError("");
     setOcrProgress(0);
     setOcrStatus("");
+    setCanStopOcr(false);
     setOcrRawText("");
     setOcrNormalization(null);
     setReviewedNormalizedText("");
     setShowOcrCorrections(false);
     setMultiPassResult(null);
     setShowMultiPassRaw(false);
+    setVehicleForm(null);
+    setDocumentInsight(null);
     await checkImageQuality(file);
   }
 
@@ -220,7 +303,7 @@ function App() {
       });
       const normalized = applyOcrNormalization(extracted);
       setNotice("تم استخراج النص وتحسينه محليًا.");
-      if (autoAnalyzeAfterOcr) await analyze(normalized.normalizedText);
+      if (autoAnalyzeAfterOcr && detectDocumentTemplate(normalized.normalizedText).templateId === "unknown") await analyze(normalized.normalizedText);
     } catch (error) {
       setOcrError(error instanceof Error ? error.message : "تعذر استخراج النص من الصورة.");
     } finally {
@@ -240,9 +323,13 @@ function App() {
     setOcrStatus("تجهيز الصورة...");
     setMultiPassResult(null);
     setShowMultiPassRaw(false);
+    const abortController = new AbortController();
+    ocrAbortRef.current = abortController;
+    setCanStopOcr(true);
     try {
       const result = await extractTextMultiPass(selectedImage, {
         deviceTier,
+        signal: abortController.signal,
         onProgress: (progress, status) => {
           setOcrProgress(progress);
           setOcrStatus(status);
@@ -252,12 +339,125 @@ function App() {
       setOcrStatus("تحسين النص...");
       const normalized = applyOcrNormalization(result.bestText, true);
       setNotice("تمت القراءة متعددة الطبقات وتحسين النص محليًا.");
-      if (autoAnalyzeAfterOcr) await analyze(normalized.normalizedText);
+      if (autoAnalyzeAfterOcr && detectDocumentTemplate(normalized.normalizedText).templateId === "unknown") await analyze(normalized.normalizedText);
     } catch (error) {
-      setOcrError(error instanceof Error ? error.message : "تعذر تشغيل القراءة متعددة الطبقات.");
+      const message = error instanceof Error ? error.message : "تعذر تشغيل القراءة متعددة الطبقات.";
+      setOcrError(
+        message.includes("إيقاف")
+          ? "تم إيقاف القراءة. يمكنك تشغيلها مرة أخرى أو إدخال النص يدويًا."
+          : message.includes("لم نتمكن من استخراج نص موثوق")
+            ? "لم نتمكن من استخراج نص موثوق. جرّب صورة أوضح أو أدخل النص يدويًا."
+            : message
+      );
     } finally {
       setIsOcrRunning(false);
+      setCanStopOcr(false);
+      ocrAbortRef.current = null;
     }
+  }
+
+  function stopOcr() {
+    ocrAbortRef.current?.abort();
+    setCanStopOcr(false);
+    setOcrStatus("جاري إيقاف القراءة...");
+    setNotice("تم طلب إيقاف القراءة.");
+  }
+
+  function vehicleFormSummary(form = vehicleForm) {
+    if (!form) return "";
+    return [
+      `${form.formType} - ${form.agency}`,
+      `الثقة: ${form.confidenceScore}%`,
+      `اسم المشتري: ${form.extractedFields.buyerName ?? "غير واضح"}`,
+      `الرقم الوطني: ${maskSensitiveValue(form.extractedFields.buyerNationalId, "nationalId") || "غير واضح"}`,
+      `الهاتف: ${maskSensitiveValue(form.extractedFields.phone, "phone") || "غير واضح"}`,
+      `اسم البائع: ${form.extractedFields.sellerName ?? "غير واضح"}`,
+      `رقم سند: ${maskSensitiveValue(form.extractedFields.bondNumber, "document") || "غير واضح"}`,
+      `الحقول الناقصة: ${form.missingFields.length ? form.missingFields.join("، ") : "لا يوجد"}`,
+      `الخطوة التالية: ${form.nextBestStep}`,
+    ].join("\n");
+  }
+
+  async function copyVehicleFormSummary() {
+    await copyText(vehicleFormSummary(), "تم نسخ ملخص النموذج.");
+  }
+
+  function documentSummary(insight = documentInsight) {
+    if (!insight) return "";
+    return [
+      `${insight.detection.templateName} - ${insight.detection.category}`,
+      `الثقة: ${insight.detection.confidence}%`,
+      `الكلمات المطابقة: ${insight.detection.matchedKeywords.join("، ") || "غير واضح"}`,
+      ...insight.fields.map((field) => `${field.label}: ${field.maskedValue ?? field.value}`),
+      `الخطوة التالية: ${insight.recommendedAction}`,
+    ].join("\n");
+  }
+
+  async function copyDocumentSummary() {
+    await copyText(documentSummary(), "تم نسخ ملخص الوثيقة.");
+  }
+
+  function saveDocumentCase() {
+    if (!documentInsight) return;
+    const syntheticAnalysis: LetterAnalysis = {
+      title: documentInsight.detection.templateName,
+      agency: documentInsight.fields.find((field) => field.key === "agency")?.value ?? "جهة غير محددة",
+      documentType: "إشعار عام",
+      referenceNumber: documentInsight.fields.find((field) => field.key === "referenceNumber")?.value ?? "غير مذكور",
+      deadline: documentInsight.fields.find((field) => field.key === "deadline")?.value ?? "لا يوجد",
+      deadlineType: documentInsight.fields.some((field) => field.key === "deadline") ? "يحتاج تأكيد" : "لا يوجد",
+      urgencyMessage: "وثيقة مصنفة تلقائيًا تحتاج مراجعة المستخدم.",
+      confidenceScore: documentInsight.detection.confidence,
+      riskLevel: documentInsight.detection.category === "إشعارات وقرارات" ? "متوسط" : "منخفض",
+      reason: "تم التعرف على نوع الوثيقة واستخراج حقولها المهمة محليًا.",
+      requiredActions: [documentInsight.recommendedAction],
+      requiredDocuments: [],
+      suggestedReplyType: "ملخص وثيقة",
+      simplifiedExplanation: documentSummary(),
+      summary: documentSummary(),
+      nextBestStep: documentInsight.recommendedAction,
+      warning: "هذا تصنيف مساعد من OCR وقد يحتوي أخطاء؛ راجع الوثيقة الأصلية قبل الاعتماد.",
+    };
+    const next = [{ id: crypto.randomUUID(), analysis: syntheticAnalysis, status: "جديد" as CaseStatus, createdAt: new Date().toISOString() }, ...cases];
+    setCases(next);
+    persistCases(next);
+    setNotice("تم حفظ ملف المتابعة.");
+  }
+
+  function canPrepareOfficialReply(templateId = documentInsight?.detection.templateId) {
+    return !!templateId && ["official-letter", "rejection-letter", "missing-documents-notice", "fine-or-violation", "appointment-notice", "tax-or-fee-notice", "municipality-notice", "court-or-legal-notice"].includes(templateId);
+  }
+
+  function saveVehicleFormCase() {
+    if (!vehicleForm) return;
+    const syntheticAnalysis: LetterAnalysis = {
+      title: vehicleForm.formType,
+      agency: vehicleForm.agency,
+      documentType: "إشعار عام",
+      referenceNumber: vehicleForm.extractedFields.bondNumber ?? "غير مذكور",
+      deadline: "لا يوجد",
+      deadlineType: "لا يوجد",
+      urgencyMessage: "نموذج بيانات يحتاج مراجعة الحقول قبل الاعتماد.",
+      confidenceScore: vehicleForm.confidenceScore,
+      riskLevel: vehicleForm.warnings.length || vehicleForm.missingFields.length ? "متوسط" : "منخفض",
+      reason: "تم التعرف على نموذج حكومي جدولي وليس خطابًا عاديًا.",
+      requiredActions: ["مراجعة الحقول المستخرجة", "تأكيد بيانات المشتري والبائع", "مراجعة رقم الوثيقة ورقم السند"],
+      requiredDocuments: vehicleForm.missingFields,
+      suggestedReplyType: "مراجعة نموذج",
+      simplifiedExplanation: vehicleFormSummary(),
+      summary: vehicleFormSummary(),
+      nextBestStep: vehicleForm.nextBestStep,
+      warning: "هذا استخراج مساعد من OCR وقد يحتوي أخطاء؛ راجع النموذج الأصلي قبل الاعتماد.",
+    };
+    const next = [{ id: crypto.randomUUID(), analysis: syntheticAnalysis, status: "جديد" as CaseStatus, createdAt: new Date().toISOString() }, ...cases];
+    setCases(next);
+    persistCases(next);
+    setNotice("تم حفظ ملف المتابعة.");
+  }
+
+  async function analyzeAsPlainText() {
+    setVehicleForm(null);
+    await analyze(text);
   }
 
   function makeReply() {
@@ -326,6 +526,9 @@ function App() {
     setShowOcrCorrections(false);
     setMultiPassResult(null);
     setShowMultiPassRaw(false);
+    setCanStopOcr(false);
+    setVehicleForm(null);
+    setDocumentInsight(null);
     setInputMode("text");
     setAnalysis(null);
     setReply(null);
@@ -385,6 +588,8 @@ function App() {
           <span>4. تابع ملفك</span>
         </div>
       </section>
+
+      <TemplateLibrary />
 
       <section className="panel demo-panel">
         <div className="section-title"><CheckCircle2 size={22} /><h2>جرّب سيناريو العرض</h2></div>
@@ -497,6 +702,7 @@ function App() {
                 <div><i style={{ width: `${Math.max(3, ocrProgress)}%` }} /></div>
               </div>
             )}
+            {isOcrRunning && canStopOcr && <button className="danger" onClick={stopOcr}>إيقاف القراءة</button>}
             {ocrError && <p className="ocr-error">{ocrError}</p>}
             {multiPassResult && (
               <div className="multi-pass-card">
@@ -622,10 +828,57 @@ function App() {
         />
         {inputMode === "image" && text.trim() && <div className="extracted-card">النص المستخرج جاهز للمراجعة والتعديل قبل التحليل.</div>}
         {inputMode === "image" && text.trim() && !autoAnalyzeAfterOcr && <button className="secondary" onClick={ocrNormalization ? analyzeReviewedOcrText : () => analyze()}>حلّل النص المستخرج</button>}
-        <button className="primary" onClick={() => analyze()}>حلّل الكتاب</button>
+        <button className="primary" onClick={analyzeEntryText}>حلّل الكتاب</button>
       </section>
 
-      {analysis && (
+      {documentInsight && (
+        <section className="panel document-panel" ref={resultRef}>
+          <div className="section-title"><Clipboard size={22} /><h2>تم التعرف على نوع الوثيقة</h2></div>
+          <div className="analysis-grid">
+            <Info label="نوع الوثيقة" value={documentInsight.detection.templateName} />
+            <Info label="التصنيف" value={documentInsight.detection.category} />
+            <Info label="درجة الثقة" value={`${documentInsight.detection.confidence}%`} />
+            <Info label="الخطوة التالية" value={documentInsight.recommendedAction} />
+          </div>
+          {!!documentInsight.detection.matchedKeywords.length && (
+            <div className="term-list document-terms">
+              {documentInsight.detection.matchedKeywords.map((term) => <span key={term}>{term}</span>)}
+            </div>
+          )}
+          <DocumentFields fields={documentInsight.fields} />
+          <Checklist title="تحذيرات الحقول" items={documentInsight.fields.filter((field) => field.warning).map((field) => `${field.label}: ${field.warning}`)} />
+          <div className="warning"><AlertTriangle size={18} /> الحقول الحساسة مخفية جزئيًا. التصنيف مبني على القوالب الحكومية والرسمية الشائعة ولا يغني عن مراجعة الجهة الرسمية.</div>
+          {!canPrepareOfficialReply() && <div className="next-step">هذه وثيقة تعريفية/إثباتية. يمكنك حفظ ملخصها أو استخدامها كمرفق، ولا يلزم رد رسمي إلا إذا كانت ضمن معاملة.</div>}
+          <div className="action-row">
+            {canPrepareOfficialReply() && <button className="primary" onClick={analyzeAsPlainText}>حلّل كخطاب حكومي</button>}
+            <button className="secondary" onClick={copyDocumentSummary}>نسخ ملخص الوثيقة</button>
+            <button className="secondary" onClick={saveDocumentCase}>حفظ كملف متابعة</button>
+          </div>
+        </section>
+      )}
+
+      {vehicleForm && !documentInsight && (
+        <section className="panel form-panel" ref={resultRef}>
+          <div className="section-title"><Clipboard size={22} /><h2>تم التعرف على نموذج نقل مركبة</h2></div>
+          <div className="analysis-grid">
+            <Info label="نوع النموذج" value={vehicleForm.formType} />
+            <Info label="الجهة" value={vehicleForm.agency} />
+            <Info label="درجة الثقة" value={`${vehicleForm.confidenceScore}%`} />
+            <Info label="الخطوة التالية" value={vehicleForm.nextBestStep} />
+          </div>
+          <VehicleTransferFields form={vehicleForm} />
+          {!!vehicleForm.missingFields.length && <Checklist title="الحقول الناقصة" items={vehicleForm.missingFields} />}
+          {!!vehicleForm.warnings.length && <Checklist title="تحذيرات" items={vehicleForm.warnings} />}
+          <div className="warning"><AlertTriangle size={18} /> لا يتم عرض الأرقام الوطنية أو أرقام الهواتف كاملة. راجع النموذج الأصلي قبل اعتماد البيانات.</div>
+          <div className="action-row">
+            <button className="secondary" onClick={copyVehicleFormSummary}>نسخ ملخص النموذج</button>
+            <button className="secondary" onClick={saveVehicleFormCase}>حفظ كملف متابعة</button>
+            <button className="primary" onClick={analyzeAsPlainText}>تحليل كنص عادي بدل نموذج</button>
+          </div>
+        </section>
+      )}
+
+      {analysis && !vehicleForm && (
         <section className="panel result-panel" ref={resultRef}>
           <div className="section-title"><Clipboard size={22} /><h2>نتيجة الفهم</h2></div>
           <div className="analysis-grid">
@@ -728,6 +981,104 @@ function CaseCard({ item, updateStatus, deleteCase, copyText }: { item: CaseFile
       <button className="secondary" onClick={() => copyText(summary, "تم نسخ الملخص.")}>نسخ الملخص</button>
       <button className="danger" onClick={() => deleteCase(item.id)}><Trash2 size={16} /> حذف</button>
     </article>
+  );
+}
+
+function VehicleTransferFields({ form }: { form: VehicleTransferFormResult }) {
+  const fields = form.extractedFields;
+  const rows = [
+    ["صفة التسجيل", fields.registrationType],
+    ["الرقم الوطني للمشتري", maskSensitiveValue(fields.buyerNationalId, "nationalId")],
+    ["اسم المشتري", fields.buyerName],
+    ["تاريخ الولادة", fields.birthDate],
+    ["اسم الأم", fields.motherName],
+    ["الجنسية", fields.nationality],
+    ["المحافظة", fields.addressGovernorate],
+    ["رقم الهاتف", maskSensitiveValue(fields.phone, "phone")],
+    ["نوع وثيقة المشتري", fields.buyerDocumentType],
+    ["رقم وثيقة المشتري", maskSensitiveValue(fields.buyerDocumentNumber, "document")],
+    ["اسم البائع", fields.sellerName],
+    ["نوع وثيقة البائع", fields.sellerDocumentType],
+    ["رقم وثيقة البائع", maskSensitiveValue(fields.sellerDocumentNumber, "document")],
+    ["رقم سند", maskSensitiveValue(fields.bondNumber, "document")],
+  ];
+
+  return (
+    <div className="form-table">
+      {rows.map(([label, value]) => (
+        <div key={label}>
+          <span>{label}</span>
+          <strong>{value || "غير واضح"}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DocumentFields({ fields }: { fields: ExtractedDocumentField[] }) {
+  if (!fields.length) return <p className="empty">لم يتم استخراج حقول واضحة بعد. راجع النص يدويًا.</p>;
+  return (
+    <div className="form-table">
+      {fields.map((field) => (
+        <div key={`${field.key}-${field.label}`}>
+          <span>{field.label}{field.sensitive ? " · مخفي جزئيًا" : ""}</span>
+          <strong>{field.maskedValue ?? field.value}</strong>
+          <small>ثقة {field.confidence}%</small>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function vehicleFormToDocumentFields(form: VehicleTransferFormResult): ExtractedDocumentField[] {
+  const f = form.extractedFields;
+  const rows: Array<[string, string, string | undefined, boolean, Parameters<typeof maskSensitiveValue>[1]]> = [
+    ["registrationType", "صفة التسجيل", f.registrationType, false, "text"],
+    ["buyerNationalId", "الرقم الوطني للمشتري", f.buyerNationalId, true, "nationalId"],
+    ["buyerName", "اسم المشتري", f.buyerName, false, "text"],
+    ["birthDate", "تاريخ الولادة", f.birthDate, false, "text"],
+    ["motherName", "اسم الأم", f.motherName, false, "text"],
+    ["nationality", "الجنسية", f.nationality, false, "text"],
+    ["addressGovernorate", "المحافظة", f.addressGovernorate, false, "text"],
+    ["phone", "رقم الهاتف", f.phone, true, "phone"],
+    ["buyerDocumentType", "نوع وثيقة المشتري", f.buyerDocumentType, false, "text"],
+    ["buyerDocumentNumber", "رقم وثيقة المشتري", f.buyerDocumentNumber, true, "document"],
+    ["sellerName", "اسم البائع", f.sellerName, false, "text"],
+    ["sellerDocumentType", "نوع وثيقة البائع", f.sellerDocumentType, false, "text"],
+    ["sellerDocumentNumber", "رقم وثيقة البائع", f.sellerDocumentNumber, true, "document"],
+    ["bondNumber", "رقم سند", f.bondNumber, true, "document"],
+  ];
+  return rows.filter(([, , value]) => !!value).map(([key, label, value, sensitive, type]) => ({
+    key,
+    label,
+    value: value ?? "",
+    maskedValue: sensitive ? maskSensitiveValue(value, type) : undefined,
+    confidence: form.confidenceScore,
+    sensitive,
+  }));
+}
+
+function TemplateLibrary() {
+  const categories = [...new Set(documentTemplates.filter((item) => item.id !== "unknown").map((item) => item.category))];
+  return (
+    <section className="panel template-library">
+      <div className="section-title"><CheckCircle2 size={22} /><h2>القوالب التي يدعمها وثيقتك</h2></div>
+      {categories.map((category) => (
+        <div className="template-group" key={category}>
+          <h3>{category}</h3>
+          <div className="template-grid">
+            {documentTemplates.filter((template) => template.category === category && template.id !== "unknown").map((template) => (
+              <article key={template.id}>
+                <strong>{template.arabicName}</strong>
+                <p>يستخرج: {template.expectedFields.slice(0, 4).join("، ") || "حقول عامة"}</p>
+                <span>{template.sensitiveFields.length ? "يحتوي بيانات حساسة" : "لا توجد حساسية عالية غالبًا"}</span>
+                <small>{template.id === "medical-report" || template.id === "court-or-legal-notice" ? "يحتاج OCR أوضح" : template.id === "passport" || template.id === "vehicle-license" ? "ضمن خطة Android المحلية" : "مدعوم نصيًا"}</small>
+              </article>
+            ))}
+          </div>
+        </div>
+      ))}
+    </section>
   );
 }
 

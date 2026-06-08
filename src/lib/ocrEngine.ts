@@ -2,6 +2,7 @@ import { recognize } from "tesseract.js";
 import { createPreprocessingVariants, type PreprocessVariant } from "./imagePreprocessingPipeline";
 
 type DeviceTier = "weak" | "medium" | "strong";
+const OCR_PASS_TIMEOUT_MS = 45_000;
 
 export interface MultiPassOcrResult {
   bestText: string;
@@ -132,8 +133,11 @@ async function recognizeVariant(
   variant: PreprocessVariant,
   index: number,
   total: number,
+  signal?: AbortSignal,
   onProgress?: (progress: number, status: string) => void
 ) {
+  if (signal?.aborted) throw new Error("تم إيقاف القراءة.");
+
   const label = {
     original: "الصورة الأصلية",
     grayscale: "النسخة الرمادية",
@@ -145,45 +149,69 @@ async function recognizeVariant(
     textFocused: "نسخة مركزة للنص",
   }[variant];
 
-  const result = await recognize(blob, "ara+eng", {
+  const statusPrefix = `الطبقة ${index + 1} من ${total}:`;
+  let passActive = true;
+  const recognizePromise = recognize(blob, "ara+eng", {
     logger: (message) => {
+      if (!passActive || signal?.aborted) return;
       const stepProgress = message.progress ?? 0;
       const base = (index / total) * 88;
       const progress = Math.round(8 + base + stepProgress * (88 / total));
-      onProgress?.(progress, `تجربة ${label}...`);
+      onProgress?.(progress, `${statusPrefix} تجربة ${label}...`);
     },
   });
 
+  const timeoutPromise = new Promise<"timeout">((resolve) => {
+    window.setTimeout(() => resolve("timeout"), OCR_PASS_TIMEOUT_MS);
+  });
+  const abortPromise = new Promise<"aborted">((resolve) => {
+    signal?.addEventListener("abort", () => resolve("aborted"), { once: true });
+  });
+
+  const result = await Promise.race([recognizePromise, timeoutPromise, abortPromise]);
+  passActive = false;
+  if (result === "aborted") throw new Error("تم إيقاف القراءة.");
+  if (result === "timeout") {
+    return {
+      text: "",
+      score: 0,
+      warning: `تم تجاهل طبقة ${variant} لأنها تجاوزت 45 ثانية.`,
+    };
+  }
+
   const text = result.data.text.trim();
-  return { text, score: scoreOcrText(text) };
+  return { text, score: scoreOcrText(text), warning: "" };
 }
 
 export async function extractTextMultiPass(
   file: File,
   options: {
     deviceTier: DeviceTier;
+    signal?: AbortSignal;
     onProgress?: (progress: number, status: string) => void;
   }
 ): Promise<MultiPassOcrResult> {
   try {
+    if (options.signal?.aborted) throw new Error("تم إيقاف القراءة.");
     options.onProgress?.(5, "تجهيز الصورة...");
     const pipeline = await createPreprocessingVariants(file, options.deviceTier);
     const rawResults: MultiPassOcrResult["rawResults"] = [];
 
     for (let index = 0; index < pipeline.variants.length; index += 1) {
+      if (options.signal?.aborted) throw new Error("تم إيقاف القراءة.");
       const item = pipeline.variants[index];
-      const result = await recognizeVariant(item.blob, item.variant, index, pipeline.variants.length, options.onProgress);
+      const result = await recognizeVariant(item.blob, item.variant, index, pipeline.variants.length, options.signal, options.onProgress);
       rawResults.push({
         variant: item.variant,
         text: result.text,
         score: result.score,
-        warnings: item.warnings,
+        warnings: result.warning ? [...item.warnings, result.warning] : item.warnings,
       });
     }
 
     rawResults.sort((a, b) => b.score - a.score);
     const selected = rawResults[0];
-    if (!selected?.text.trim()) throw new Error("لم يتم استخراج نص واضح من أي طبقة معالجة.");
+    if (!selected?.text.trim()) throw new Error("لم نتمكن من استخراج نص موثوق. جرّب صورة أوضح أو أدخل النص يدويًا.");
 
     options.onProgress?.(96, "اختيار أفضل قراءة...");
     const bestText = mergeOcrCandidates(rawResults);
