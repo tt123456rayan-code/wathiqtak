@@ -547,9 +547,25 @@ function App() {
 
   return (
     <main className="app-shell">
+      <header className="site-header">
+        <div className="site-brand">
+          <img src={brandIconUrl} alt="" />
+          <div>
+            <strong>وثيقتك</strong>
+            <span>من ورقة معقدة إلى إجراء واضح</span>
+          </div>
+        </div>
+        <nav aria-label="روابط وثيقتك">
+          <a href="#demo">سيناريوهات</a>
+          <a href="#input">الإدخال</a>
+          <a href="#cases">ملفاتي</a>
+        </nav>
+      </header>
+
       <section className="hero">
         <div className="brand-mark"><img src={brandIconUrl} alt="" /></div>
         <div className="hero-copy">
+          <span className="hero-eyebrow">من الورقة، إلى الإجراء</span>
           <img className="brand-logo" src={brandLogoUrl} alt="وثيقتك" />
           <h1>وثيقتك</h1>
           <p>وثيقتك… من ورقة معقدة إلى إجراء واضح.</p>
@@ -558,6 +574,12 @@ function App() {
             <span>2. افهم القرار والمهلة</span>
             <span>3. جهّز الرد الرسمي</span>
             <span>4. تابع ملفك</span>
+          </div>
+          <div className="hero-stats" aria-label="مزايا وثيقتك">
+            <span><strong>محلي</strong><small>بدون رفع ملفات</small></span>
+            <span><strong>OCR</strong><small>قراءة تجريبية</small></span>
+            <span><strong>RTL</strong><small>مصمم للعربية</small></span>
+            <span><strong>متابعة</strong><small>ملفات ومهل</small></span>
           </div>
         </div>
       </section>
@@ -596,14 +618,14 @@ function App() {
         </div>
       </section>
 
-      <section className="panel demo-panel">
+      <section className="panel demo-panel" id="demo">
         <div className="section-title"><CheckCircle2 size={22} /><h2>جرّب سيناريو العرض</h2></div>
         <div className="demo-grid">
           {demoScenarios.map((sample) => <button key={sample.label} className="demo-card" onClick={() => runDemo(sample.text, sample.normalize)}>{sample.label}</button>)}
         </div>
       </section>
 
-      <section className="panel input-panel">
+      <section className="panel input-panel" id="input">
         <div className="section-title"><MessageSquareText size={22} /><h2>إدخال الكتاب</h2></div>
         <div className="tabs">
           <button className={inputMode === "text" ? "active" : ""} onClick={() => setInputMode("text")}>ألصق النص</button>
@@ -963,7 +985,7 @@ function App() {
         </ul>
       </section>
 
-      <section className="panel">
+      <section className="panel" id="cases">
         <div className="section-title"><CheckCircle2 size={22} /><h2>ملفاتي</h2></div>
         {cases.length === 0 ? <p className="empty">لا توجد ملفات متابعة محفوظة بعد.</p> : (
           <div className="case-list">
