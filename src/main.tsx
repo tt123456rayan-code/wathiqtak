@@ -596,8 +596,6 @@ function App() {
         </div>
       </section>
 
-      <TemplateLibrary />
-
       <section className="panel demo-panel">
         <div className="section-title"><CheckCircle2 size={22} /><h2>جرّب سيناريو العرض</h2></div>
         <div className="demo-grid">
@@ -848,6 +846,8 @@ function App() {
         {inputMode === "image" && text.trim() && !autoAnalyzeAfterOcr && <button className="secondary" onClick={ocrNormalization ? analyzeReviewedOcrText : () => analyze()}>حلّل النص المستخرج</button>}
         <button className="primary" onClick={analyzeEntryText}>حلّل الكتاب</button>
       </section>
+
+      <TemplateLibrary />
 
       {documentInsight && (
         <section className="panel document-panel" ref={resultRef}>
